@@ -254,20 +254,35 @@ async def create_handler(message: types.Message, state: FSMContext):
 
 @dp.message(PredictionStates.awaiting_prediction_question)
 async def prediction_question_handler(message: types.Message, state: FSMContext):
+    if message.text.startswith('/'):
+        return
+        
     question = message.text
     user_id = message.from_user.id
     await db.add_prediction_draft(user_id, question)
     await state.set_state(PredictionStates.awaiting_option_one)
-    await message.answer("Please enter the first option for your prediction:")
+    await message.answer(
+        "Please enter the first option for your prediction:\n\n"
+        "Use /cancel to abort this operation."
+    )
 
 @dp.message(PredictionStates.awaiting_option_one)
 async def option_one_handler(message: types.Message, state: FSMContext):
+    if message.text.startswith('/'):
+        return
+        
     await state.update_data(option1=message.text)
     await state.set_state(PredictionStates.awaiting_option_two)
-    await message.answer("Please enter the second option for your prediction:")
+    await message.answer(
+        "Please enter the second option for your prediction:\n\n"
+        "Use /cancel to abort this operation."
+    )
 
 @dp.message(PredictionStates.awaiting_option_two)
 async def option_two_handler(message: types.Message, state: FSMContext):
+    if message.text.startswith('/'):
+        return
+        
     data = await state.get_data()
     option1 = data['option1']
     option2 = message.text
@@ -275,26 +290,32 @@ async def option_two_handler(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     await db.update_prediction_options(user_id, option1, option2)
     await state.set_state(PredictionStates.awaiting_deadline)
-    await message.answer("Please specify the deadline (YYYY-MM-DD HH:MM format).")
+    await message.answer(
+        "Please specify the deadline (YYYY-MM-DD HH:MM format):\n\n"
+        "Use /cancel to abort this operation."
+    )
 
 @dp.message(PredictionStates.awaiting_deadline)
 async def prediction_deadline_handler(message: types.Message, state: FSMContext):
+    if message.text.startswith('/'):
+        return
+        
     user_id = message.from_user.id
     try:
-        # Parse local time
         local_deadline = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
         user_tz = await db.get_user_timezone(user_id)
-        
-        # Convert to UTC for storage
         utc_deadline = to_utc(local_deadline, user_tz)
         if not utc_deadline:
             raise ValueError("Invalid timezone configuration")
             
-        await db.finalize_prediction(user_id, utc_deadline)
-        await message.answer("Prediction created successfully.")
+        await db.set_prediction_deadline(user_id, utc_deadline)
+        await message.answer("Prediction created successfully!")
         await state.clear()
-    except ValueError as e:
-        await message.answer("Invalid date format. Please use YYYY-MM-DD HH:MM.")
+    except ValueError:
+        await message.answer(
+            "Invalid date format. Please use YYYY-MM-DD HH:MM format.\n\n"
+            "Use /cancel to abort this operation."
+        )
 
 @dp.message(Command("resolve"))
 async def resolve_handler(message: types.Message):
@@ -518,6 +539,9 @@ async def leaderboard_handler(message: types.Message):
     user_rank = await db.get_user_rank(message.from_user.id)
     
     text = "🏆 *Top 5 Users*\n\n"
+    
+    # Get top 5 entries
+    top_5 = leaderboard[:5]
     
     for entry in top_5:
         try:
