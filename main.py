@@ -514,28 +514,24 @@ async def get_user_roles(user_id: int):
 
 @dp.message(Command("leaderboard"))
 async def leaderboard_handler(message: types.Message):
-    # Get top 5 users and user's rank
     leaderboard = await db.get_leaderboard()
     user_rank = await db.get_user_rank(message.from_user.id)
     
-    # Format top 5 message
-    top_5 = leaderboard[:5]
     text = "🏆 *Top 5 Users*\n\n"
     
     for entry in top_5:
         try:
             user = await bot.get_chat(entry["user_id"])
-            username = user.username or user.first_name
-            text += f"{entry['rank']}. @{username}: {entry['points']} points\n"
+            username = html.escape(user.username or user.first_name)
+            text += f"{entry['rank']}. {username}: {entry['points']} points\n"
         except TelegramBadRequest:
             text += f"{entry['rank']}. User{entry['user_id']}: {entry['points']} points\n"
     
-    # Add user's rank if not in top 5
     if user_rank and user_rank["rank"] > 5:
         text += f"\n*Your Rank*\n"
         text += f"{user_rank['rank']}: {user_rank['points']} points"
     
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("cancel"))
 async def cancel_handler(message: types.Message, state: FSMContext):

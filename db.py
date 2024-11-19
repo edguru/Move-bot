@@ -243,3 +243,11 @@ class Database:
             return False
         return any(bet["user_id"] == user_id for bet in prediction.get("bets", []))
 
+    async def update_user_balance(self, user_id: int, amount: int):
+        """Add or subtract tokens from user balance"""
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$inc": {"balance": amount}},
+            upsert=True
+        )
+
