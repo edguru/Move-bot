@@ -37,8 +37,9 @@ scheduler = AsyncIOScheduler()
 # Define states
 class PredictionStates(StatesGroup):
     awaiting_timezone = State()
-    awaiting_wallet_address = State()
     awaiting_prediction_question = State()
+    awaiting_option_one = State()
+    awaiting_option_two = State()
     awaiting_deadline = State()
     awaiting_bet_amount = State()
     awaiting_kol_id = State()
@@ -90,7 +91,7 @@ async def refer_button_handler(callback_query: types.CallbackQuery):
     await callback_query.answer()
 
 @dp.callback_query(lambda c: c.data == "create_prediction")
-async def create_prediction_button_handler(callback_query: types.CallbackQuery):
+async def create_prediction_button_handler(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     roles = await get_user_roles(user_id)
     
@@ -98,6 +99,7 @@ async def create_prediction_button_handler(callback_query: types.CallbackQuery):
         await callback_query.answer("Only KOLs, admins, and owners can create predictions!", show_alert=True)
         return
     
+    await state.set_state(PredictionStates.awaiting_prediction_question)
     await callback_query.message.answer("Please send your prediction question.")
     await callback_query.answer()
 
@@ -238,8 +240,25 @@ async def prediction_question_handler(message: types.Message, state: FSMContext)
     question = message.text
     user_id = message.from_user.id
     await db.add_prediction_draft(user_id, question)
+    await state.set_state(PredictionStates.awaiting_option_one)
+    await message.answer("Please enter the first option for your prediction:")
+
+@dp.message(PredictionStates.awaiting_option_one)
+async def option_one_handler(message: types.Message, state: FSMContext):
+    await state.update_data(option1=message.text)
+    await state.set_state(PredictionStates.awaiting_option_two)
+    await message.answer("Please enter the second option for your prediction:")
+
+@dp.message(PredictionStates.awaiting_option_two)
+async def option_two_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    option1 = data['option1']
+    option2 = message.text
+    
+    user_id = message.from_user.id
+    await db.update_prediction_options(user_id, option1, option2)
     await state.set_state(PredictionStates.awaiting_deadline)
-    await message.answer("Prediction saved. Please specify the deadline (YYYY-MM-DD HH:MM format).")
+    await message.answer("Please specify the deadline (YYYY-MM-DD HH:MM format).")
 
 @dp.message(PredictionStates.awaiting_deadline)
 async def prediction_deadline_handler(message: types.Message, state: FSMContext):

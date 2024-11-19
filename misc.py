@@ -32,17 +32,24 @@ async def resolve_bets(bot, db):
             print(f"Error resolving prediction {prediction['_id']}: {e}")
 
 async def resolve_single_prediction(prediction, db):
-    # Calculate rewards and identify the top winner
-    yes_total = sum(user['amount'] for user in prediction['bids'] if user['choice'] == "yes")
-    no_total = sum(user['amount'] for user in prediction['bids'] if user['choice'] == "no")
+    # Calculate rewards for each option
+    option1_total = sum(bet['amount'] for bet in prediction['bets'] 
+                       if bet['choice'] == prediction['options']['option1'])
+    option2_total = sum(bet['amount'] for bet in prediction['bets'] 
+                       if bet['choice'] == prediction['options']['option2'])
 
-    winning_choice = "yes" if yes_total > no_total else "no"
-    winners = [user for user in prediction['bids'] if user['choice'] == winning_choice]
-    total_pool = yes_total + no_total
-    reward_pool = no_total if winning_choice == "yes" else yes_total
+    winning_choice = prediction['options']['option1'] if option1_total > option2_total else prediction['options']['option2']
+    winners = [bet for bet in prediction['bets'] if bet['choice'] == winning_choice]
+    total_pool = option1_total + option2_total
+    reward_pool = option2_total if winning_choice == prediction['options']['option1'] else option1_total
 
-    # Distribute rewards proportionally
-    resolved_data = {"winning_choice": winning_choice, "user_ids": [], "top_winner": None, "top_amount": 0}
+    resolved_data = {
+        "winning_choice": winning_choice,
+        "user_ids": [],
+        "top_winner": None,
+        "top_amount": 0
+    }
+
     for winner in winners:
         user_reward = (winner['amount'] / total_pool) * reward_pool
         resolved_data['user_ids'].append(winner['user_id'])
@@ -50,7 +57,6 @@ async def resolve_single_prediction(prediction, db):
             resolved_data['top_winner'] = winner['user_id']
             resolved_data['top_amount'] = user_reward
         
-        # Update user's balance in DB
         await db.update_user_balance(winner['user_id'], user_reward)
 
     return resolved_data

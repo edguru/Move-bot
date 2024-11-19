@@ -45,16 +45,27 @@ class Database:
         return user["points"] if user else 0
 
     async def add_prediction_draft(self, user_id, question):
-        await self.predictions.insert_one(
-            {
-                "creator_id": user_id,
-                "question": question,
-                "created_at": datetime.utcnow(),
-                "expiry_time": None,
-                "bets": [],
-                "resolved": False,
-                "result": None
-            }
+        await self.predictions.insert_one({
+            "creator_id": user_id,
+            "question": question,
+            "created_at": datetime.utcnow(),
+            "expiry_time": None,
+            "options": {
+                "option1": None,
+                "option2": None
+            },
+            "bets": [],
+            "resolved": False,
+            "result": None
+        })
+
+    async def update_prediction_options(self, user_id, option1, option2):
+        await self.predictions.update_one(
+            {"creator_id": user_id, "expiry_time": None},
+            {"$set": {
+                "options.option1": option1,
+                "options.option2": option2
+            }}
         )
 
     async def finalize_prediction(self, user_id, expiry_time):
@@ -78,6 +89,9 @@ class Database:
         prediction = await self.predictions.find_one({"_id": ObjectId(prediction_id)})
         if not prediction or prediction["resolved"]:
             raise ValueError("Prediction not found or already resolved.")
+        
+        if choice not in [prediction["options"]["option1"], prediction["options"]["option2"]]:
+            raise ValueError("Invalid choice")
 
         user = await self.users.find_one({"user_id": user_id})
         if not user or user["balance"] < amount:
