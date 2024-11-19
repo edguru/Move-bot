@@ -37,6 +37,7 @@ scheduler = AsyncIOScheduler()
 # Define states
 class PredictionStates(StatesGroup):
     awaiting_timezone = State()
+    awaiting_wallet_address = State()
     awaiting_prediction_question = State()
     awaiting_option_one = State()
     awaiting_option_two = State()
