@@ -5,9 +5,8 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime
-from misc import broadcast_notifications, resolve_bets, convert_to_timezone, to_utc, from_utc
+from misc import broadcast_notifications, resolve_bets, convert_to_timezone, to_utc, from_utc, resolve_single_prediction
 from db import Database
 from dotenv import load_dotenv
 import os
@@ -32,7 +31,6 @@ MIN_BET = int(os.getenv("MIN_BET_AMOUNT", 10))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 db = Database(MONGO_URI, DB_NAME)
-scheduler = AsyncIOScheduler()
 
 # Define states
 class PredictionStates(StatesGroup):
@@ -287,8 +285,8 @@ async def option_two_handler(message: types.Message, state: FSMContext):
     option1 = data['option1']
     option2 = message.text
     
-    user_id = message.from_user.id
-    await db.update_prediction_options(user_id, option1, option2)
+    # Updates draft with options
+    await db.update_prediction_options(message.from_user.id, option1, option2)
     await state.set_state(PredictionStates.awaiting_deadline)
     await message.answer(
         "Please specify the deadline (YYYY-MM-DD HH:MM format):\n\n"
@@ -302,14 +300,29 @@ async def prediction_deadline_handler(message: types.Message, state: FSMContext)
         
     user_id = message.from_user.id
     try:
+        # Check if user has enough tokens (80) to create prediction
+        balance = await db.get_user_balance(user_id)
+        if balance < 80:
+            await message.answer("⛔️ You need 80 tokens to create a prediction.")
+            await db.delete_prediction_draft(user_id)
+            await state.clear()
+            return
+
+        # Parse and validate deadline
         local_deadline = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
         user_tz = await db.get_user_timezone(user_id)
         utc_deadline = to_utc(local_deadline, user_tz)
         if not utc_deadline:
             raise ValueError("Invalid timezone configuration")
             
-        await db.set_prediction_deadline(user_id, utc_deadline)
-        await message.answer("Prediction created successfully!")
+        # Finalize prediction and deduct tokens
+        await db.finalize_prediction(user_id, utc_deadline)
+        await db.update_user_balance(user_id, -80)  # Deduct 80 tokens
+        
+        await message.answer(
+            "✅ Prediction created successfully!\n"
+            "Users can now place bets using /predict command."
+        )
         await state.clear()
     except ValueError:
         await message.answer(
@@ -328,11 +341,21 @@ async def resolve_handler(message: types.Message):
     for prediction in predictions:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="Yes", callback_data=f"resolve_yes_{prediction['_id']}"),
-                InlineKeyboardButton(text="No", callback_data=f"resolve_no_{prediction['_id']}")
+                InlineKeyboardButton(
+                    text=prediction['options']['option1'],
+                    callback_data=f"resolve_{prediction['options']['option1']}_{prediction['_id']}"
+                ),
+                InlineKeyboardButton(
+                    text=prediction['options']['option2'],
+                    callback_data=f"resolve_{prediction['options']['option2']}_{prediction['_id']}"
+                )
             ]
         ])
-        await message.answer(f"Resolve Prediction: {prediction['question']}", reply_markup=keyboard)
+        await message.answer(
+            f"Resolve Prediction: {prediction['question']}\n"
+            f"Options: {prediction['options']['option1']} vs {prediction['options']['option2']}",
+            reply_markup=keyboard
+        )
 
 # Callback handlers
 @dp.callback_query(F.data.startswith("bet_"))
@@ -379,10 +402,34 @@ async def resolve_prediction_handler(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     
     try:
-        await db.resolve_prediction(user_id, prediction_id, result)
-        await callback_query.message.answer(f"Prediction resolved as '{result.upper()}'. Rewards distributed.")
+        prediction = await db.resolve_prediction(user_id, prediction_id, result)
+        resolved_data = await resolve_single_prediction(prediction, db)
+        
+        # Create personalized messages for participants
+        for participant_id in resolved_data['user_ids']:
+            # Find if user was winner or loser
+            winner_info = next((w for w in resolved_data['winners'] if w['user_id'] == participant_id), None)
+            loser_info = next((l for l in resolved_data['losers'] if l['user_id'] == participant_id), None)
+            
+            message = f"Prediction '{prediction['question']}' has been resolved!\n"
+            message += f"Winning choice: {resolved_data['winning_choice']}\n\n"
+            
+            if winner_info:
+                message += f"🎉 Congratulations! You won {winner_info['reward']:.2f} tokens!\n"
+                message += f"Your bet: {winner_info['bet_amount']} tokens"
+            elif loser_info:
+                message += f"😔 Unfortunately, you lost {loser_info['lost_amount']} tokens.\n"
+                message += f"Your bet: {loser_info['bet_amount']} tokens"
+            
+            try:
+                await bot.send_message(participant_id, message)
+            except Exception as e:
+                print(f"Failed to notify user {participant_id}: {e}")
+        
+        await callback_query.message.answer("Prediction resolved and participants notified!")
     except ValueError as e:
-        await callback_query.message.answer(f"Error: {str(e)}")
+        await callback_query.message.answer(f"Error resolving prediction: {e}")
+    
     await callback_query.answer()
 
 # Wallet handlers
@@ -564,16 +611,22 @@ async def cancel_handler(message: types.Message, state: FSMContext):
         await message.reply("No active operation to cancel.")
         return
     
+    # Check if we're in prediction creation flow
+    if current_state in [
+        PredictionStates.awaiting_prediction_question,
+        PredictionStates.awaiting_option_one,
+        PredictionStates.awaiting_option_two,
+        PredictionStates.awaiting_deadline
+    ]:
+        # Delete the draft prediction
+        await db.delete_prediction_draft(message.from_user.id)
+    
     await state.clear()
     await message.reply("Operation cancelled.")
 
 async def main():
     # Configure logging
     logging.basicConfig(level=logging.INFO)
-    
-    # Start scheduler
-    scheduler.add_job(automatic_resolution, "interval", hours=1)
-    scheduler.start()
     
     # Start bot
     await dp.start_polling(bot)

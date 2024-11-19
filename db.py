@@ -135,15 +135,6 @@ class Database:
                 {"$inc": {"balance": reward}}
             )
 
-    async def automatic_resolution(self):
-        expired_predictions = await self.predictions.find(
-            {"expiry_time": {"$lte": datetime.utcnow()}, "resolved": False}
-        ).to_list(length=10)
-
-        for prediction in expired_predictions:
-            await self.resolve_prediction(
-                prediction["creator_id"], str(prediction["_id"]), "No Result"
-            )
 
     async def add_kol(self, user_id):
         result = await self.users.update_one(

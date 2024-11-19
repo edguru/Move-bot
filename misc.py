@@ -32,33 +32,49 @@ async def resolve_bets(bot, db):
             print(f"Error resolving prediction {prediction['_id']}: {e}")
 
 async def resolve_single_prediction(prediction, db):
-    # Calculate rewards for each option
-    option1_total = sum(bet['amount'] for bet in prediction['bets'] 
-                       if bet['choice'] == prediction['options']['option1'])
-    option2_total = sum(bet['amount'] for bet in prediction['bets'] 
-                       if bet['choice'] == prediction['options']['option2'])
-
-    winning_choice = prediction['options']['option1'] if option1_total > option2_total else prediction['options']['option2']
-    winners = [bet for bet in prediction['bets'] if bet['choice'] == winning_choice]
-    total_pool = option1_total + option2_total
-    reward_pool = option2_total if winning_choice == prediction['options']['option1'] else option1_total
+    result = prediction['result']
+    winners = [bet for bet in prediction['bets'] if bet['choice'] == result]
+    losers = [bet for bet in prediction['bets'] if bet['choice'] != result]
+    
+    total_pool = sum(bet['amount'] for bet in prediction['bets'])
+    loser_pool = sum(bet['amount'] for bet in losers)  # Winners split losers' bets
 
     resolved_data = {
-        "winning_choice": winning_choice,
-        "user_ids": [],
+        "winning_choice": result,
+        "user_ids": [],  # Will contain all participants
+        "winners": [],   # List of winner details
+        "losers": [],    # List of loser details
         "top_winner": None,
         "top_amount": 0
     }
 
-    for winner in winners:
-        user_reward = (winner['amount'] / total_pool) * reward_pool
-        resolved_data['user_ids'].append(winner['user_id'])
-        if user_reward > resolved_data['top_amount']:
-            resolved_data['top_winner'] = winner['user_id']
-            resolved_data['top_amount'] = user_reward
-        
-        await db.update_user_balance(winner['user_id'], user_reward)
-
+    # Process winners
+    if winners:
+        winner_total_bet = sum(w['amount'] for w in winners)
+        for winner in winners:
+            user_reward = (winner['amount'] / winner_total_bet) * loser_pool
+            resolved_data['user_ids'].append(winner['user_id'])
+            resolved_data['winners'].append({
+                "user_id": winner['user_id'],
+                "bet_amount": winner['amount'],
+                "reward": user_reward
+            })
+            
+            if user_reward > resolved_data['top_amount']:
+                resolved_data['top_winner'] = winner['user_id']
+                resolved_data['top_amount'] = user_reward
+            
+            await db.update_user_balance(winner['user_id'], user_reward)
+    
+    # Process losers
+    for loser in losers:
+        resolved_data['user_ids'].append(loser['user_id'])
+        resolved_data['losers'].append({
+            "user_id": loser['user_id'],
+            "bet_amount": loser['amount'],
+            "lost_amount": loser['amount']
+        })
+    
     return resolved_data
 
 # Convert user timezones safely
