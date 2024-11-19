@@ -11,8 +11,6 @@ import os
 from functools import wraps
 from aiogram.utils.exceptions import ChatNotFound
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiohttp import web
-import ssl
 import logging
 
 # Load environment variables
@@ -279,64 +277,7 @@ async def help_button_handler(callback_query: types.CallbackQuery):
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
-# Webhook settings
-WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')  # e.g., 'https://your-domain.com'
-WEBHOOK_PATH = os.getenv('WEBHOOK_PATH', '/webhook')  # e.g., '/webhook'
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
-
-# Webserver settings
-WEBAPP_HOST = os.getenv('WEBAPP_HOST', '0.0.0.0')
-WEBAPP_PORT = int(os.getenv('WEBAPP_PORT', 8000))
-
-# Initialize bot and dispatcher
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
-dp.middleware.setup(LoggingMiddleware())
-
-async def on_startup(dp: Dispatcher):
-    await bot.set_webhook(WEBHOOK_URL)
-    # Initialize your database connection here
-    logging.info(f"Webhook set to {WEBHOOK_URL}")
-
-async def on_shutdown(dp: Dispatcher):
-    # Close DB connections, etc.
-    await bot.delete_webhook()
-    await dp.storage.close()
-    await dp.storage.wait_closed()
-    logging.info("Bot shutdown successfully")
-
-# Create web app
-app = web.Application()
-
-# Process webhook calls
-async def handle_webhook(request):
-    if request.match_info.get('token') != BOT_TOKEN:
-        return web.Response(status=403)
-    
-    request_data = await request.json()
-    update = types.Update(**request_data)
-    await dp.process_update(update)
-    return web.Response(status=200)
-
-# Setup routes
-app.router.add_post(f'{WEBHOOK_PATH}', handle_webhook)
-
 if __name__ == '__main__':
-    # Setup handlers
-    dp.register_message_handler(start_handler, commands=['start'])
-    dp.register_message_handler(help_handler, commands=['help'])
-    # ... (register other handlers) ...
-
-    # Start web app
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    
-    # Run web app
-    web.run_app(
-        app,
-        host=WEBAPP_HOST,
-        port=WEBAPP_PORT,
-        ssl_context=None  # Add SSL context if needed
-    )
+    executor.start_polling(dp, skip_updates=True)
 
 
