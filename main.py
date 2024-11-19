@@ -134,9 +134,7 @@ async def start_handler(message: types.Message, state: FSMContext):
 @dp.message(Command("help"))
 async def help_handler(message: types.Message):
     user_id = message.from_user.id
-    is_admin = await db.is_admin(user_id)
-    is_owner = await db.is_bot_owner(user_id)
-    is_kol = await db.is_kol(user_id)
+    roles = await get_user_roles(user_id)
 
     help_text = """
 🤖 *Available Commands:*
@@ -146,22 +144,23 @@ async def help_handler(message: types.Message):
 /predict - View and bet on active predictions
 /balance - Check your token and points balance
 /addwallet - Add your wallet address
+/timezone - Change your timezone
 """
 
-    if is_kol:
+    if "kol" in roles:
         help_text += """
 *KOL Commands:*
 /create - Create a new prediction
 /resolve - Resolve your created predictions
 """
 
-    if is_admin:
+    if "admin" in roles:
         help_text += """
 *Admin Commands:*
 /addkol - Add a new KOL (Reply to message or use user ID)
 """
 
-    if is_owner:
+    if "owner" in roles:
         help_text += """
 *Owner Commands:*
 /addadmin - Add a new admin (Reply to message or use user ID)
@@ -174,7 +173,7 @@ async def help_handler(message: types.Message):
 3. Check your earnings with /balance
 
 *Need more help?*
-Contact support: @your_support_username
+Contact support: @{os.getenv("SUPPORT_USERNAME", "your_support_username")}
 """
 
     await message.answer(help_text, parse_mode="Markdown")
@@ -453,6 +452,16 @@ async def show_main_menu(message: types.Message):
         ]
     ])
     await message.answer("Welcome to the Prediction Bot! Choose an option:", reply_markup=buttons)
+
+async def get_user_roles(user_id: int):
+    roles = []
+    if await db.is_bot_owner(user_id):
+        roles.extend(["owner", "admin", "kol"])
+    elif await db.is_admin(user_id):
+        roles.extend(["admin", "kol"])
+    elif await db.is_kol(user_id):
+        roles.append("kol")
+    return roles
 
 async def main():
     # Configure logging
