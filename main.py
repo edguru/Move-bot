@@ -214,12 +214,19 @@ async def predict_handler(message: types.Message):
         local_time = from_utc(prediction['expiry_time'], user_tz)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="Yes", callback_data=f"bet_yes_{prediction['_id']}"),
-                InlineKeyboardButton(text="No", callback_data=f"bet_no_{prediction['_id']}")
+                InlineKeyboardButton(
+                    text=prediction['options']['option1'], 
+                    callback_data=f"bet_{prediction['options']['option1']}_{prediction['_id']}"
+                ),
+                InlineKeyboardButton(
+                    text=prediction['options']['option2'], 
+                    callback_data=f"bet_{prediction['options']['option2']}_{prediction['_id']}"
+                )
             ]
         ])
         await message.answer(
             f"Prediction: {prediction['question']}\n"
+            f"Options: {prediction['options']['option1']} vs {prediction['options']['option2']}\n"
             f"Bids close: {local_time:%Y-%m-%d %H:%M} {local_time.tzname()}",
             reply_markup=keyboard
         )
