@@ -60,17 +60,25 @@ async def predict_button_handler(callback_query: types.CallbackQuery):
         await callback_query.message.answer("No active predictions available.")
         return
     
+    user_tz = await db.get_user_timezone(user_id)
     for prediction in predictions:
-        expiry_time = convert_to_timezone(prediction['expiry_time'], await db.get_user_timezone(user_id))
+        local_time = from_utc(prediction['expiry_time'], user_tz)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="Yes", callback_data=f"bet_yes_{prediction['_id']}"),
-                InlineKeyboardButton(text="No", callback_data=f"bet_no_{prediction['_id']}")
+                InlineKeyboardButton(
+                    text=prediction['options']['option1'], 
+                    callback_data=f"bet_{prediction['options']['option1']}_{prediction['_id']}"
+                ),
+                InlineKeyboardButton(
+                    text=prediction['options']['option2'], 
+                    callback_data=f"bet_{prediction['options']['option2']}_{prediction['_id']}"
+                )
             ]
         ])
         await callback_query.message.answer(
             f"Prediction: {prediction['question']}\n"
-            f"Bids close: {expiry_time:%Y-%m-%d %H:%M} {expiry_time.tzname()}",
+            f"Options: {prediction['options']['option1']} vs {prediction['options']['option2']}\n"
+            f"Bids close: {local_time:%Y-%m-%d %H:%M} {local_time.tzname()}",
             reply_markup=keyboard
         )
     await callback_query.answer()
