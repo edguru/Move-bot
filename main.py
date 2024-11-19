@@ -114,7 +114,7 @@ async def start_handler(message: types.Message, state: FSMContext):
             await db.add_referral(user_id, referrer_id)
         except (ValueError, IndexError):
             pass
-
+    
     # Always check timezone
     user_tz = await db.get_user_timezone(user_id)
     if not user_tz:
@@ -127,7 +127,7 @@ async def start_handler(message: types.Message, state: FSMContext):
         ])
         await message.answer("Please select your timezone:", reply_markup=keyboard)
         return
-
+    
     # Show main menu if timezone is set
     await show_main_menu(message)
 
@@ -440,6 +440,19 @@ async def custom_timezone_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("Invalid timezone. Please try again with a valid timezone name.")
     await state.clear()
+
+async def show_main_menu(message: types.Message):
+    buttons = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Predict", callback_data="predict"),
+            InlineKeyboardButton(text="Refer", callback_data="refer")
+        ],
+        [
+            InlineKeyboardButton(text="Create a Prediction", callback_data="create_prediction"),
+            InlineKeyboardButton(text="Help", callback_data="help")
+        ]
+    ])
+    await message.answer("Welcome to the Prediction Bot! Choose an option:", reply_markup=buttons)
 
 async def main():
     # Configure logging
