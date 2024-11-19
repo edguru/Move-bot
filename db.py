@@ -237,3 +237,9 @@ class Database:
                 return entry
         return None
 
+    async def has_user_bet(self, user_id, prediction_id):
+        prediction = await self.predictions.find_one({"_id": ObjectId(prediction_id)})
+        if not prediction:
+            return False
+        return any(bet["user_id"] == user_id for bet in prediction.get("bets", []))
+

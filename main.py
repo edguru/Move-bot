@@ -320,9 +320,17 @@ async def bet_handler(callback_query: types.CallbackQuery, state: FSMContext):
     data = callback_query.data.split("_")
     prediction_id, choice = data[2], data[1]
     
+    # Check if user has already bet
+    if await db.has_user_bet(user_id, prediction_id):
+        await callback_query.answer("You have already placed a bet on this prediction!", show_alert=True)
+        return
+    
     await state.update_data(prediction_id=prediction_id, choice=choice)
     await state.set_state(PredictionStates.awaiting_bet_amount)
-    await callback_query.message.answer("Choose your bet amount (10 to 100):")
+    await callback_query.message.answer(
+        "Choose your bet amount (10 to 100):\n\n"
+        "Use /cancel to abort this operation."
+    )
     await callback_query.answer()
 
 @dp.message(PredictionStates.awaiting_bet_amount)
@@ -528,6 +536,16 @@ async def leaderboard_handler(message: types.Message):
         text += f"{user_rank['rank']}: {user_rank['points']} points"
     
     await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("cancel"))
+async def cancel_handler(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        await message.reply("No active operation to cancel.")
+        return
+    
+    await state.clear()
+    await message.reply("Operation cancelled.")
 
 async def main():
     # Configure logging
