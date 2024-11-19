@@ -92,9 +92,12 @@ async def refer_button_handler(callback_query: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "create_prediction")
 async def create_prediction_button_handler(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-    if not await db.is_kol(user_id):
-        await callback_query.answer("Only KOLs can create predictions!", show_alert=True)
+    roles = await get_user_roles(user_id)
+    
+    if not any(role in roles for role in ["kol", "admin", "owner"]):
+        await callback_query.answer("Only KOLs, admins, and owners can create predictions!", show_alert=True)
         return
+    
     await callback_query.message.answer("Please send your prediction question.")
     await callback_query.answer()
 
@@ -221,8 +224,10 @@ async def predict_handler(message: types.Message):
 @dp.message(Command("create"))
 async def create_handler(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    if not await db.is_kol(user_id):
-        await message.reply("⛔️ Only KOLs can create predictions.")
+    roles = await get_user_roles(user_id)
+    
+    if not any(role in roles for role in ["kol", "admin", "owner"]):
+        await message.reply("⛔️ Only KOLs, admins, and owners can create predictions.")
         return
     
     await state.set_state(PredictionStates.awaiting_prediction_question)
