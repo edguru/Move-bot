@@ -10,6 +10,9 @@ class Database:
         self.users = self.db["users"]
         self.predictions = self.db["predictions"]
         self.bot_owner_id = int(os.getenv("BOT_OWNER_ID"))
+        self.BOT_USERNAME = os.getenv("BOT_USERNAME")
+        if not self.BOT_USERNAME:
+            raise ValueError("BOT_USERNAME environment variable is not set")
 
     async def create_user(self, user_id):
         existing_user = await self.users.find_one({"user_id": user_id})
@@ -151,3 +154,33 @@ class Database:
 
     async def is_bot_owner(self, user_id):
         return user_id == self.bot_owner_id
+
+    async def add_referral(self, user_id, referrer_id):
+        if user_id == referrer_id:
+            raise ValueError("Cannot refer yourself")
+        
+        user = await self.users.find_one({"user_id": user_id})
+        if user and not user.get("referred_by"):
+            await self.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"referred_by": referrer_id}}
+            )
+            await self.users.update_one(
+                {"user_id": referrer_id},
+                {"$inc": {"referrals": 1, "points": 10}}  # Bonus points for referral
+            )
+            return True
+        return False
+
+    async def get_referral_info(self, user_id):
+        user = await self.users.find_one({"user_id": user_id})
+        if not user:
+            return None
+        referral_count = user.get("referrals", 0)
+        referral_points = referral_count * 10
+        return {
+            "count": referral_count,
+            "points": referral_points,
+            "referral_link": f"https://t.me/{self.BOT_USERNAME}?start=ref_{user_id}"
+        }
+
