@@ -1,150 +1,124 @@
 from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
+from datetime import datetime
 
-# MongoDB connection
-client = AsyncIOMotorClient("mongodb://localhost:27017")
-db = client["prediction_bot"]
+class Database:
+    def __init__(self, mongo_uri, db_name):
+        self.client = AsyncIOMotorClient(mongo_uri)
+        self.db = self.client[db_name]
+        self.users = self.db["users"]
+        self.predictions = self.db["predictions"]
 
-users = db["users"]
-predictions = db["predictions"]
-bets = db["bets"]
+    async def create_user(self, user_id):
+        existing_user = await self.users.find_one({"user_id": user_id})
+        if not existing_user:
+            await self.users.insert_one(
+                {
+                    "user_id": user_id,
+                    "balance": 100,  # Default token balance
+                    "points": 50,    # Default points
+                    "wallet": None,
+                    "referrals": 0
+                }
+            )
 
-# USERS COLLECTION
-async def add_user(user_id):
-    """Add a new user to the database."""
-    user = await users.find_one({"user_id": user_id})
-    if not user:
-        await users.insert_one(
+    async def update_user_wallet(self, user_id, wallet_address):
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"wallet": wallet_address}}
+        )
+
+    async def get_user_balance(self, user_id):
+        user = await self.users.find_one({"user_id": user_id})
+        return user["balance"] if user else 0
+
+    async def get_user_points(self, user_id):
+        user = await self.users.find_one({"user_id": user_id})
+        return user["points"] if user else 0
+
+    async def add_prediction_draft(self, user_id, question):
+        await self.predictions.insert_one(
             {
-                "user_id": user_id,
-                "tokens": 100,  # Starting tokens
-                "points": 0,  # Starting points
-                "wallet": None,  # Wallet details
-                "referrals": [],  # List of referrals
-                "is_kol": False,  # Whether the user is a KOL
-                "is_admin": False,  # Whether the user is an admin
+                "creator_id": user_id,
+                "question": question,
+                "created_at": datetime.utcnow(),
+                "expiry_time": None,
+                "bets": [],
+                "resolved": False,
+                "result": None
             }
         )
 
-async def get_user(user_id):
-    """Fetch user details."""
-    return await users.find_one({"user_id": user_id})
+    async def finalize_prediction(self, user_id, expiry_time):
+        await self.predictions.update_one(
+            {"creator_id": user_id, "expiry_time": None},
+            {"$set": {"expiry_time": expiry_time}}
+        )
 
-async def update_user_balance(user_id, tokens=0, points=0):
-    """Update user balance by incrementing tokens and/or points."""
-    await users.update_one(
-        {"user_id": user_id},
-        {"$inc": {"tokens": tokens, "points": points}}
-    )
+    async def get_active_predictions(self):
+        return await self.predictions.find(
+            {"resolved": False, "expiry_time": {"$gt": datetime.utcnow()}}
+        ).to_list(length=10)
 
-async def update_wallet(user_id, wallet, chain):
-    """Update user's wallet details."""
-    await users.update_one(
-        {"user_id": user_id},
-        {"$set": {"wallet": {"address": wallet, "chain": chain}}}
-    )
+    async def get_user_predictions(self, user_id, active_only=False):
+        query = {"creator_id": user_id}
+        if active_only:
+            query["resolved"] = False
+        return await self.predictions.find(query).to_list(length=10)
 
-async def get_user_balance(user_id):
-    """Get the user's token and point balances."""
-    user = await get_user(user_id)
-    return {"tokens": user["tokens"], "points": user["points"]}
+    async def place_bet(self, user_id, prediction_id, choice, amount):
+        prediction = await self.predictions.find_one({"_id": ObjectId(prediction_id)})
+        if not prediction or prediction["resolved"]:
+            raise ValueError("Prediction not found or already resolved.")
 
-async def add_referral(referrer_id, referred_user_id):
-    """Add a referral and update referrer's rewards."""
-    await users.update_one(
-        {"user_id": referrer_id},
-        {"$push": {"referrals": referred_user_id}}
-    )
+        user = await self.users.find_one({"user_id": user_id})
+        if not user or user["balance"] < amount:
+            raise ValueError("Insufficient balance.")
 
-# PREDICTIONS COLLECTION
-async def create_prediction(question, options, timeline, created_by):
-    """Create a new prediction."""
-    result = await predictions.insert_one(
-        {
-            "question": question,
-            "options": options,  # Example: ["yes", "no"]
-            "timeline": timeline,
-            "created_by": created_by,
-            "status": "active",  # "active" or "resolved"
-            "bets": {},  # Bets: {"yes": 0, "no": 0}
-            "bidders": []  # List of user bids
-        }
-    )
-    return result.inserted_id
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$inc": {"balance": -amount}}
+        )
+        await self.predictions.update_one(
+            {"_id": ObjectId(prediction_id)},
+            {"$push": {"bets": {"user_id": user_id, "choice": choice, "amount": amount}}}
+        )
 
-async def get_prediction(prediction_id):
-    """Fetch a prediction by its ID."""
-    return await predictions.find_one({"_id": prediction_id})
+    async def resolve_prediction(self, user_id, prediction_id, result):
+        prediction = await self.predictions.find_one(
+            {"_id": ObjectId(prediction_id), "creator_id": user_id, "resolved": False}
+        )
+        if not prediction:
+            raise ValueError("Prediction not found or already resolved.")
 
-async def update_prediction_bets(prediction_id, choice, amount):
-    """Update the bets for a prediction."""
-    await predictions.update_one(
-        {"_id": prediction_id},
-        {"$inc": {f"bets.{choice}": amount}}
-    )
+        await self.predictions.update_one(
+            {"_id": ObjectId(prediction_id)},
+            {"$set": {"resolved": True, "result": result}}
+        )
+        await self.distribute_rewards(prediction, result)
 
-async def add_bid_to_prediction(prediction_id, user_id, choice, amount):
-    """Add a user's bid to the prediction."""
-    await predictions.update_one(
-        {"_id": prediction_id},
-        {"$push": {"bidders": {"user_id": user_id, "choice": choice, "amount": amount}}}
-    )
+    async def distribute_rewards(self, prediction, result):
+        bets = prediction["bets"]
+        total_pool = sum(bet["amount"] for bet in bets if bet["choice"] == result)
+        if total_pool == 0:
+            return  # No winners
 
-async def resolve_prediction(prediction_id, correct_choice):
-    """Resolve a prediction."""
-    await predictions.update_one(
-        {"_id": prediction_id},
-        {"$set": {"status": "resolved", "correct_choice": correct_choice}}
-    )
+        winners = [bet for bet in bets if bet["choice"] == result]
+        sorted_winners = sorted(winners, key=lambda x: x["amount"], reverse=True)
 
-async def get_active_predictions():
-    """Fetch all active predictions."""
-    return await predictions.find({"status": "active"}).to_list(None)
+        for idx, winner in enumerate(sorted_winners):
+            reward = (winner["amount"] / total_pool) * total_pool
+            await self.users.update_one(
+                {"user_id": winner["user_id"]},
+                {"$inc": {"balance": reward}}
+            )
 
-async def get_user_predictions(user_id):
-    """Fetch all predictions created by a user."""
-    return await predictions.find({"created_by": user_id}).to_list(None)
+    async def automatic_resolution(self):
+        expired_predictions = await self.predictions.find(
+            {"expiry_time": {"$lte": datetime.utcnow()}, "resolved": False}
+        ).to_list(length=10)
 
-# BETS COLLECTION
-async def place_bet(user_id, prediction_id, choice, amount):
-    """Place a bet on a prediction."""
-    await bets.insert_one(
-        {
-            "user_id": user_id,
-            "prediction_id": prediction_id,
-            "choice": choice,
-            "amount": amount
-        }
-    )
-
-async def get_bets_by_prediction(prediction_id):
-    """Fetch all bets placed on a specific prediction."""
-    return await bets.find({"prediction_id": prediction_id}).to_list(None)
-
-async def get_bidders(prediction_id):
-    """Fetch all bidders for a specific prediction."""
-    return await predictions.find_one({"_id": prediction_id}, {"bidders": 1})["bidders"]
-
-# LEADERBOARD
-async def get_leaderboard():
-    """Get top users based on tokens earned."""
-    return await users.find().sort("tokens", -1).limit(10).to_list(None)
-
-# KOL MANAGEMENT
-async def add_kol(user_id):
-    """Add a KOL."""
-    await users.update_one({"user_id": user_id}, {"$set": {"is_kol": True}})
-
-async def is_kol(user_id):
-    """Check if a user is a KOL."""
-    user = await get_user(user_id)
-    return user.get("is_kol", False)
-
-# ADMIN MANAGEMENT
-async def add_admin(user_id):
-    """Add an admin."""
-    await users.update_one({"user_id": user_id}, {"$set": {"is_admin": True}})
-
-async def is_admin(user_id):
-    """Check if a user is an admin."""
-    user = await get_user(user_id)
-    return user.get("is_admin", False)
+        for prediction in expired_predictions:
+            await self.resolve_prediction(
+                prediction["creator_id"], str(prediction["_id"]), "No Result"
+            )
