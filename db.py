@@ -2,6 +2,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 from datetime import datetime
 import os
+from pytz import timezone, UnknownTimeZoneError
 
 class Database:
     def __init__(self, mongo_uri, db_name):
@@ -183,4 +184,21 @@ class Database:
             "points": referral_points,
             "referral_link": f"https://t.me/{self.BOT_USERNAME}?start=ref_{user_id}"
         }
+
+    async def get_user_timezone(self, user_id):
+        user = await self.users.find_one({"user_id": user_id})
+        return user.get("timezone", "UTC") if user else "UTC"
+
+    async def set_user_timezone(self, user_id, tz_name):
+        try:
+            # Validate timezone
+            timezone(tz_name)
+            result = await self.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"timezone": tz_name}},
+                upsert=True
+            )
+            return True
+        except UnknownTimeZoneError:
+            return False
 
