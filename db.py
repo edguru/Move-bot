@@ -216,3 +216,24 @@ class Database:
         except UnknownTimeZoneError:
             return False
 
+    async def get_leaderboard(self):
+        # Get all users sorted by points in descending order
+        users = await self.users.find({}).sort("points", -1).to_list(length=None)
+        
+        # Create leaderboard data
+        leaderboard = []
+        for idx, user in enumerate(users, 1):
+            leaderboard.append({
+                "rank": idx,
+                "user_id": user["user_id"],
+                "points": user["points"]
+            })
+        return leaderboard
+
+    async def get_user_rank(self, user_id):
+        leaderboard = await self.get_leaderboard()
+        for entry in leaderboard:
+            if entry["user_id"] == user_id:
+                return entry
+        return None
+
