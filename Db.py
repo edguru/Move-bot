@@ -1,6 +1,7 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 from datetime import datetime
+import os
 
 class Database:
     def __init__(self, mongo_uri, db_name):
@@ -8,6 +9,7 @@ class Database:
         self.db = self.client[db_name]
         self.users = self.db["users"]
         self.predictions = self.db["predictions"]
+        self.bot_owner_id = int(os.getenv("BOT_OWNER_ID"))
 
     async def create_user(self, user_id):
         existing_user = await self.users.find_one({"user_id": user_id})
@@ -18,7 +20,9 @@ class Database:
                     "balance": 100,  # Default token balance
                     "points": 50,    # Default points
                     "wallet": None,
-                    "referrals": 0
+                    "referrals": 0,
+                    "is_kol": False,
+                    "is_admin": False
                 }
             )
 
@@ -122,3 +126,28 @@ class Database:
             await self.resolve_prediction(
                 prediction["creator_id"], str(prediction["_id"]), "No Result"
             )
+
+    async def add_kol(self, user_id):
+        result = await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"is_kol": True}}
+        )
+        return result.modified_count > 0
+
+    async def add_admin(self, user_id):
+        result = await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"is_admin": True}}
+        )
+        return result.modified_count > 0
+
+    async def is_kol(self, user_id):
+        user = await self.users.find_one({"user_id": user_id})
+        return user and user.get("is_kol", False)
+
+    async def is_admin(self, user_id):
+        user = await self.users.find_one({"user_id": user_id})
+        return user and user.get("is_admin", False)
+
+    async def is_bot_owner(self, user_id):
+        return user_id == self.bot_owner_id

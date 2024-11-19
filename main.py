@@ -6,16 +6,54 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime
 from misc import broadcast_notifications, resolve_bets, convert_to_timezone
 from db import Database
+from dotenv import load_dotenv
+import os
+from functools import wraps
+from aiogram.utils.exceptions import ChatNotFound
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiohttp import web
+import ssl
+import logging
+
+# Load environment variables
+load_dotenv()
 
 # Bot and DB setup
-BOT_TOKEN = "YOUR_BOT_TOKEN"
-MONGO_URI = "YOUR_MONGO_URI"
-DB_NAME = "YOUR_DB_NAME"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
+DB_NAME = os.getenv("DB_NAME")
+BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID"))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 db = Database(MONGO_URI, DB_NAME)
 scheduler = AsyncIOScheduler()
+
+# Optional configurations
+MAX_BET = int(os.getenv("MAX_BET_AMOUNT", 100))
+MIN_BET = int(os.getenv("MIN_BET_AMOUNT", 10))
+
+# Decorator for admin-only commands
+def admin_required(func):
+    @wraps(func)
+    async def wrapper(message: types.Message, *args, **kwargs):
+        user_id = message.from_user.id
+        if not (await db.is_admin(user_id) or await db.is_bot_owner(user_id)):
+            await message.reply("⛔️ This command is only available to administrators.")
+            return
+        return await func(message, *args, **kwargs)
+    return wrapper
+
+# Decorator for bot owner only commands
+def owner_required(func):
+    @wraps(func)
+    async def wrapper(message: types.Message, *args, **kwargs):
+        user_id = message.from_user.id
+        if not await db.is_bot_owner(user_id):
+            await message.reply("⛔️ This command is only available to the bot owner.")
+            return
+        return await func(message, *args, **kwargs)
+    return wrapper
 
 # Commands
 
@@ -27,6 +65,7 @@ async def start_handler(message: types.Message):
         InlineKeyboardButton("Predict", callback_data="predict"),
         InlineKeyboardButton("Refer", callback_data="refer"),
         InlineKeyboardButton("Create a Prediction", callback_data="create_prediction"),
+        InlineKeyboardButton("Help", callback_data="help")
     )
     await message.answer("Welcome to the Prediction Bot! Choose an option:", reply_markup=buttons)
 
@@ -69,6 +108,11 @@ async def predict_handler(message: types.Message):
 
 @dp.message_handler(commands=["create"])
 async def create_handler(message: types.Message):
+    user_id = message.from_user.id
+    if not await db.is_kol(user_id):
+        await message.reply("⛔️ Only KOLs can create predictions.")
+        return
+    
     await message.answer("Please send your prediction question.")
     dp.register_message_handler(prediction_question_handler, state="awaiting_prediction_question")
 
@@ -102,6 +146,86 @@ async def resolve_handler(message: types.Message):
             InlineKeyboardButton("No", callback_data=f"resolve_no_{prediction['_id']}"),
         )
         await message.answer(f"Resolve Prediction: {prediction['question']}", reply_markup=keyboard)
+
+@dp.message_handler(commands=["addkol"])
+@admin_required
+async def add_kol_handler(message: types.Message):
+    # Check if message is a reply or contains a user ID
+    try:
+        if message.reply_to_message:
+            user_id = message.reply_to_message.from_user.id
+            username = message.reply_to_message.from_user.username
+        else:
+            args = message.get_args().split()
+            if not args:
+                await message.reply("Please reply to a user's message or provide a user ID.")
+                return
+            user_id = int(args[0])
+            user = await bot.get_chat(user_id)
+            username = user.username
+        
+        # Add user as KOL
+        if await db.add_kol(user_id):
+            await message.reply(f"✅ Successfully added @{username} (ID: {user_id}) as a KOL.")
+        else:
+            await message.reply("❌ Failed to add KOL. User might already be a KOL.")
+    
+    except (ValueError, ChatNotFound):
+        await message.reply("❌ Invalid user ID or user not found.")
+    except Exception as e:
+        await message.reply(f"❌ An error occurred: {str(e)}")
+
+@dp.message_handler(commands=["addadmin"])
+@owner_required
+async def add_admin_handler(message: types.Message):
+    try:
+        if message.reply_to_message:
+            user_id = message.reply_to_message.from_user.id
+            username = message.reply_to_message.from_user.username
+        else:
+            args = message.get_args().split()
+            if not args:
+                await message.reply("Please reply to a user's message or provide a user ID.")
+                return
+            user_id = int(args[0])
+            user = await bot.get_chat(user_id)
+            username = user.username
+        
+        # Add user as admin
+        if await db.add_admin(user_id):
+            await message.reply(f"✅ Successfully added @{username} (ID: {user_id}) as an admin.")
+        else:
+            await message.reply("❌ Failed to add admin. User might already be an admin.")
+    
+    except (ValueError, ChatNotFound):
+        await message.reply("❌ Invalid user ID or user not found.")
+    except Exception as e:
+        await message.reply(f"❌ An error occurred: {str(e)}")
+
+@dp.message_handler(commands=["help"])
+async def help_handler(message: types.Message):
+    help_text = """
+🤖 *Available Commands:*
+
+/start - Start the bot and see main menu
+/help - Show this help message
+/predict - View and bet on active predictions
+/create - Create a new prediction
+/balance - Check your token and points balance
+/addwallet - Add your wallet address
+/resolve - Resolve your created predictions
+
+*How to use:*
+1. Use /predict to view active predictions
+2. Place bets using the buttons (min: {min_bet}, max: {max_bet} tokens)
+3. Create your own predictions using /create
+4. Check your earnings with /balance
+
+*Need more help?*
+Contact support: @your_support_username
+    """.format(min_bet=MIN_BET, max_bet=MAX_BET)
+
+    await message.answer(help_text, parse_mode="Markdown")
 
 # Callback Handlers
 
@@ -146,6 +270,73 @@ async def automatic_resolution():
 scheduler.add_job(automatic_resolution, "interval", hours=1)
 scheduler.start()
 
-# Run Bot
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+# Add callback handler for help button
+@dp.callback_query_handler(lambda c: c.data == "help")
+async def help_button_handler(callback_query: types.CallbackQuery):
+    await help_handler(callback_query.message)
+    await callback_query.answer()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
+# Webhook settings
+WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')  # e.g., 'https://your-domain.com'
+WEBHOOK_PATH = os.getenv('WEBHOOK_PATH', '/webhook')  # e.g., '/webhook'
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
+# Webserver settings
+WEBAPP_HOST = os.getenv('WEBAPP_HOST', '0.0.0.0')
+WEBAPP_PORT = int(os.getenv('WEBAPP_PORT', 8000))
+
+# Initialize bot and dispatcher
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
+dp.middleware.setup(LoggingMiddleware())
+
+async def on_startup(dp: Dispatcher):
+    await bot.set_webhook(WEBHOOK_URL)
+    # Initialize your database connection here
+    logging.info(f"Webhook set to {WEBHOOK_URL}")
+
+async def on_shutdown(dp: Dispatcher):
+    # Close DB connections, etc.
+    await bot.delete_webhook()
+    await dp.storage.close()
+    await dp.storage.wait_closed()
+    logging.info("Bot shutdown successfully")
+
+# Create web app
+app = web.Application()
+
+# Process webhook calls
+async def handle_webhook(request):
+    if request.match_info.get('token') != BOT_TOKEN:
+        return web.Response(status=403)
+    
+    request_data = await request.json()
+    update = types.Update(**request_data)
+    await dp.process_update(update)
+    return web.Response(status=200)
+
+# Setup routes
+app.router.add_post(f'{WEBHOOK_PATH}', handle_webhook)
+
+if __name__ == '__main__':
+    # Setup handlers
+    dp.register_message_handler(start_handler, commands=['start'])
+    dp.register_message_handler(help_handler, commands=['help'])
+    # ... (register other handlers) ...
+
+    # Start web app
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    
+    # Run web app
+    web.run_app(
+        app,
+        host=WEBAPP_HOST,
+        port=WEBAPP_PORT,
+        ssl_context=None  # Add SSL context if needed
+    )
+
+
