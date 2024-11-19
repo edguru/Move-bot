@@ -63,3 +63,26 @@ def convert_to_timezone(user_time, user_timezone):
         return local_time
     except UnknownTimeZoneError:
         return None
+
+def to_utc(local_time, user_timezone):
+    """Convert local time to UTC"""
+    try:
+        local_tz = timezone(user_timezone)
+        utc_tz = timezone('UTC')
+        # If datetime is naive, assume it's in user's timezone
+        if local_time.tzinfo is None:
+            local_time = local_tz.localize(local_time)
+        return local_time.astimezone(utc_tz)
+    except UnknownTimeZoneError:
+        return None
+
+def from_utc(utc_time, user_timezone):
+    """Convert UTC time to user's local timezone"""
+    try:
+        local_tz = timezone(user_timezone)
+        # If datetime is naive, assume it's UTC
+        if utc_time.tzinfo is None:
+            utc_time = timezone('UTC').localize(utc_time)
+        return utc_time.astimezone(local_tz)
+    except UnknownTimeZoneError:
+        return None

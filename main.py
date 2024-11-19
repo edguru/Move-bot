@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime
-from misc import broadcast_notifications, resolve_bets, convert_to_timezone
+from misc import broadcast_notifications, resolve_bets, convert_to_timezone, to_utc, from_utc
 from db import Database
 from dotenv import load_dotenv
 import os
@@ -36,6 +36,7 @@ scheduler = AsyncIOScheduler()
 
 # Define states
 class PredictionStates(StatesGroup):
+    awaiting_timezone = State()
     awaiting_wallet_address = State()
     awaiting_prediction_question = State()
     awaiting_deadline = State()
@@ -49,27 +50,43 @@ async def help_button_handler(callback_query: types.CallbackQuery):
     await help_handler(callback_query.message)
     await callback_query.answer()
 
-@dp.callback_query(lambda c: c.data == "predict")
+@dp.callback_query(F.data == "predict")
 async def predict_button_handler(callback_query: types.CallbackQuery):
-    # Add your prediction handling logic here
-    await callback_query.answer("Prediction feature coming soon!")
+    user_id = callback_query.from_user.id
+    predictions = await db.get_active_predictions()
+    if not predictions:
+        await callback_query.message.answer("No active predictions available.")
+        return
+    
+    for prediction in predictions:
+        expiry_time = convert_to_timezone(prediction['expiry_time'], await db.get_user_timezone(user_id))
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Yes", callback_data=f"bet_yes_{prediction['_id']}"),
+                InlineKeyboardButton(text="No", callback_data=f"bet_no_{prediction['_id']}")
+            ]
+        ])
+        await callback_query.message.answer(
+            f"Prediction: {prediction['question']}\n"
+            f"Bids close: {expiry_time:%Y-%m-%d %H:%M} {expiry_time.tzname()}",
+            reply_markup=keyboard
+        )
+    await callback_query.answer()
 
 @dp.callback_query(lambda c: c.data == "refer")
 async def refer_button_handler(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     ref_info = await db.get_referral_info(user_id)
     
-    text = f"""
-📊 *Your Referral Stats*
-Total Referrals: {ref_info['count']}
-Points Earned: {ref_info['points']}
-
-🔗 *Your Referral Link*
-{ref_info['referral_link']}
-
-Share this link with friends to earn points!
-"""
-    await callback_query.message.answer(text, parse_mode="Markdown")
+    text = (
+        "📊 *Your Referral Stats*\n"
+        f"Total Referrals: {ref_info['count']}\n"
+        f"Points Earned: {ref_info['points']}\n\n"
+        "🔗 *Your Referral Link*\n"
+        f"`{ref_info['referral_link']}`\n\n"
+        "Share this link with friends to earn points\\!"
+    )
+    await callback_query.message.answer(text, parse_mode="MarkdownV2")
     await callback_query.answer()
 
 @dp.callback_query(lambda c: c.data == "create_prediction")
@@ -83,20 +100,36 @@ async def create_prediction_button_handler(callback_query: types.CallbackQuery):
 
 # Commands
 @dp.message(CommandStart())
-async def start_handler(message: types.Message):
+async def start_handler(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    await db.create_user(user_id)  # Ensure user exists
-    buttons = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Predict", callback_data="predict"),
-            InlineKeyboardButton(text="Refer", callback_data="refer")
-        ],
-        [
-            InlineKeyboardButton(text="Create a Prediction", callback_data="create_prediction"),
-            InlineKeyboardButton(text="Help", callback_data="help")
-        ]
-    ])
-    await message.answer("Welcome to the Prediction Bot! Choose an option:", reply_markup=buttons)
+    
+    # Create user if not exists
+    await db.create_user(user_id)
+    
+    # Handle referral
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith('ref_'):
+        try:
+            referrer_id = int(args[1].split('_')[1])
+            await db.add_referral(user_id, referrer_id)
+        except (ValueError, IndexError):
+            pass
+
+    # Always check timezone
+    user_tz = await db.get_user_timezone(user_id)
+    if not user_tz:
+        await state.set_state(PredictionStates.awaiting_timezone)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Asia/Dubai", callback_data="tz_Asia/Dubai")],
+            [InlineKeyboardButton(text="Europe/London", callback_data="tz_Europe/London")],
+            [InlineKeyboardButton(text="America/New_York", callback_data="tz_America/New_York")],
+            [InlineKeyboardButton(text="Custom Timezone", callback_data="tz_custom")]
+        ])
+        await message.answer("Please select your timezone:", reply_markup=keyboard)
+        return
+
+    # Show main menu if timezone is set
+    await show_main_menu(message)
 
 @dp.message(Command("help"))
 async def help_handler(message: types.Message):
@@ -171,7 +204,9 @@ async def predict_handler(message: types.Message):
         await message.answer("No active predictions available.")
         return
     
+    user_tz = await db.get_user_timezone(user_id)
     for prediction in predictions:
+        local_time = from_utc(prediction['expiry_time'], user_tz)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="Yes", callback_data=f"bet_yes_{prediction['_id']}"),
@@ -180,7 +215,7 @@ async def predict_handler(message: types.Message):
         ])
         await message.answer(
             f"Prediction: {prediction['question']}\n"
-            f"Bids close: {convert_to_timezone(prediction['expiry_time'], 'UTC')}",
+            f"Bids close: {local_time:%Y-%m-%d %H:%M} {local_time.tzname()}",
             reply_markup=keyboard
         )
 
@@ -206,11 +241,19 @@ async def prediction_question_handler(message: types.Message, state: FSMContext)
 async def prediction_deadline_handler(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     try:
-        deadline = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
-        await db.finalize_prediction(user_id, deadline)
+        # Parse local time
+        local_deadline = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
+        user_tz = await db.get_user_timezone(user_id)
+        
+        # Convert to UTC for storage
+        utc_deadline = to_utc(local_deadline, user_tz)
+        if not utc_deadline:
+            raise ValueError("Invalid timezone configuration")
+            
+        await db.finalize_prediction(user_id, utc_deadline)
         await message.answer("Prediction created successfully.")
         await state.clear()
-    except ValueError:
+    except ValueError as e:
         await message.answer("Invalid date format. Please use YYYY-MM-DD HH:MM.")
 
 @dp.message(Command("resolve"))
@@ -362,6 +405,41 @@ async def kol_id_handler(message: types.Message, state: FSMContext):
         await message.answer("Invalid user ID. Please send a valid numeric ID.")
     finally:
         await state.clear()
+
+@dp.message(Command("timezone"))
+async def timezone_command(message: types.Message):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Asia/Dubai", callback_data="tz_Asia/Dubai")],
+        [InlineKeyboardButton(text="Europe/London", callback_data="tz_Europe/London")],
+        [InlineKeyboardButton(text="America/New_York", callback_data="tz_America/New_York")],
+        [InlineKeyboardButton(text="Custom Timezone", callback_data="tz_custom")]
+    ])
+    await message.answer("Please select your timezone:", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("tz_"))
+async def timezone_callback(callback_query: types.CallbackQuery, state: FSMContext):
+    tz_name = callback_query.data[3:]
+    if tz_name == "custom":
+        await state.set_state(PredictionStates.awaiting_timezone)
+        await callback_query.message.answer(
+            "Please enter your timezone (e.g., Asia/Kolkata, Europe/Paris)"
+        )
+    else:
+        success = await db.set_user_timezone(callback_query.from_user.id, tz_name)
+        if success:
+            await callback_query.message.answer(f"Timezone set to {tz_name}")
+        else:
+            await callback_query.message.answer("Failed to set timezone")
+    await callback_query.answer()
+
+@dp.message(PredictionStates.awaiting_timezone)
+async def custom_timezone_handler(message: types.Message, state: FSMContext):
+    success = await db.set_user_timezone(message.from_user.id, message.text)
+    if success:
+        await message.answer(f"Timezone set to {message.text}")
+    else:
+        await message.answer("Invalid timezone. Please try again with a valid timezone name.")
+    await state.clear()
 
 async def main():
     # Configure logging
